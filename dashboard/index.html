@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Population Health Surveillance Dashboard</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<style>
+  body { font-family: -apple-system, Helvetica, Arial, sans-serif; background: #f7f8fa; margin: 0; padding: 24px; color: #1a1d23; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: #666; font-size: 13px; margin-bottom: 24px; }
+  .panel { background: #fff; border: 1px solid #e3e5e8; border-radius: 10px; padding: 18px; margin-bottom: 20px; }
+  .panel h2 { font-size: 14px; margin: 0 0 12px; color: #333; }
+  .row { display: flex; gap: 20px; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 320px; }
+  .axis text { font-size: 10px; fill: #555; }
+  .axis path, .axis line { stroke: #ccc; }
+  .line { fill: none; stroke-width: 2; }
+  .legend { font-size: 11px; }
+  table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #eee; }
+  .bar { fill: #3b6fd4; }
+  .flag { color: #c0392b; font-weight: 600; }
+</style>
+</head>
+<body>
+<h1>Population Health Surveillance — 5 Outcomes, 8 Centers</h1>
+<div class="sub">Real computed outputs from run_all.py — longitudinal surveillance, Q1-Q4 2025</div>
+
+<div class="panel">
+  <h2>Quarterly outcome rates (population-wide)</h2>
+  <svg id="trend-chart" width="100%" height="320"></svg>
+  <div id="legend" class="legend"></div>
+</div>
+
+<div class="row">
+  <div class="col panel">
+    <h2>Latest-quarter outcome rate by center (diabetes in control)</h2>
+    <svg id="center-chart" width="100%" height="280"></svg>
+  </div>
+  <div class="col panel">
+    <h2>Top disparities flagged (p &lt; 0.01, risk difference &ge; 8pp)</h2>
+    <table id="disparity-table"></table>
+  </div>
+</div>
+
+<script>
+d3.json("dashboard_data.json").then(data => {
+  const color = d3.scaleOrdinal().domain(data.outcomes).range(["#3b6fd4", "#e0824a", "#4aa36c", "#b25ac2", "#c0392b"]);
+
+  // --- trend chart ---
+  (function() {
+    const el = document.getElementById("trend-chart");
+    const w = el.clientWidth || 900, h = 320, m = {top: 20, right: 20, bottom: 40, left: 50};
+    const svg = d3.select(el).attr("viewBox", `0 0 ${w} ${h}`);
+    const x = d3.scalePoint().domain(data.quarters).range([m.left, w - m.right]);
+    const y = d3.scaleLinear().domain([0, 1]).range([h - m.bottom, m.top]);
+
+    data.outcomes.forEach(outcome => {
+      const series = data.quarters.map(q => ({ q, rate: data.quarterly_rates_by_outcome[outcome][q] }));
+      const line = d3.line().x(d => x(d.q)).y(d => y(d.rate));
+      svg.append("path").datum(series).attr("class", "line").attr("d", line).attr("stroke", color(outcome));
+      svg.selectAll(`.dot-${outcome.replace(/[^a-z]/gi,'')}`).data(series).join("circle")
+        .attr("cx", d => x(d.q)).attr("cy", d => y(d.rate)).attr("r", 3).attr("fill", color(outcome));
+    });
+
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${h - m.bottom})`).call(d3.axisBottom(x));
+    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.left},0)`).call(d3.axisLeft(y).tickFormat(d3.format(".0%")));
+
+    const legend = d3.select("#legend");
+    data.outcomes.forEach(outcome => {
+      legend.append("span").style("margin-right", "14px")
+        .html(`<span style="display:inline-block;width:10px;height:10px;background:${color(outcome)};border-radius:2px;margin-right:4px;"></span>${outcome}`);
+    });
+  })();
+
+  // --- center bar chart (diabetes_in_control) ---
+  (function() {
+    const el = document.getElementById("center-chart");
+    const w = el.clientWidth || 480, h = 280, m = {top: 10, right: 10, bottom: 70, left: 40};
+    const svg = d3.select(el).attr("viewBox", `0 0 ${w} ${h}`);
+    const rows = data.center_snapshot_latest_quarter;
+    const x = d3.scaleBand().domain(rows.map(d => d.center)).range([m.left, w - m.right]).padding(0.25);
+    const y = d3.scaleLinear().domain([0, 1]).range([h - m.bottom, m.top]);
+
+    svg.selectAll("rect").data(rows).join("rect")
+      .attr("class", "bar")
+      .attr("x", d => x(d.center)).attr("y", d => y(d.diabetes_in_control))
+      .attr("width", x.bandwidth()).attr("height", d => h - m.bottom - y(d.diabetes_in_control));
+
+    svg.append("g").attr("class", "axis").attr("transform", `translate(0,${h - m.bottom})`)
+      .call(d3.axisBottom(x)).selectAll("text").attr("transform", "rotate(-35)").style("text-anchor", "end");
+    svg.append("g").attr("class", "axis").attr("transform", `translate(${m.left},0)`)
+      .call(d3.axisLeft(y).tickFormat(d3.format(".0%")));
+  })();
+
+  // --- disparity table ---
+  const tbl = d3.select("#disparity-table");
+  const header = tbl.append("tr");
+  ["Outcome", "Dimension", "Subgroup", "N", "Rate", "Comparison rate", "Risk diff.", "p-value"].forEach(h => header.append("th").text(h));
+  data.top_disparities.forEach(d => {
+    const row = tbl.append("tr");
+    row.append("td").text(d.outcome);
+    row.append("td").text(d.dimension);
+    row.append("td").text(d.subgroup);
+    row.append("td").text(d.n);
+    row.append("td").text(d3.format(".1%")(d.subgroup_rate));
+    row.append("td").text(d3.format(".1%")(d.comparison_rate));
+    row.append("td").html(`<span class="flag">${d3.format("+.1%")(d.risk_difference)}</span>`);
+    row.append("td").text(d.p_value < 0.0001 ? "<0.0001" : d.p_value.toFixed(4));
+  });
+  d3.select("#disparity-table").append("caption")
+    .style("caption-side", "bottom").style("font-size", "11px").style("color", "#666").style("padding-top", "8px")
+    .text(`${data.n_significant_disparities_found} significant disparities found across ${data.n_comparisons_tested} subgroup comparisons tested; top 3 shown.`);
+});
+</script>
+</body>
+</html>
